@@ -60,13 +60,22 @@
     const calPill = o.calibrated
       ? '<span class="pill cal">已校準</span>'
       : "";
+    const notBuy =
+      o.buyable === false ||
+      o.efficiency === "weak_fill" ||
+      (o.recommend_zh && String(o.recommend_zh).includes("唔建議"));
+    const buyPill = notBuy
+      ? '<span class="pill no-buy" title="弱邊／湊位，唔建議實注">唔建議實注</span>'
+      : o.buyable === true
+        ? '<span class="pill buyable">可買</span>'
+        : "";
     const starMark = isStar ? '<span class="star-mark">⭐</span>' : "";
-    return `<div class="option ${riskClass(o.risk_tier)}${isStar ? " has-star" : ""}" data-star="${isStar ? "1" : "0"}">
+    return `<div class="option ${riskClass(o.risk_tier)}${isStar ? " has-star" : ""}${notBuy ? " no-buy" : ""}" data-star="${isStar ? "1" : "0"}">
   <div class="option-head">
     <span class="risk-badge ${riskClass(o.risk_tier)}">${esc(
       o.risk_zh || o.risk_tier || "—"
     )}</span>
-    ${starPill}${ge60}${calPill}
+    ${starPill}${ge60}${calPill}${buyPill}
     <span class="pill ${confClass(o.confidence)}">信心 ${esc(
       o.confidence_zh || o.confidence || "—"
     )}</span>
@@ -81,6 +90,148 @@
   }
 
   let starFilterOn = false;
+
+  function isBuyableOption(o) {
+    if (!o) return false;
+    if (o.buyable === true) return true;
+    if (o.buyable === false) return false;
+    if (o.efficiency === "weak_fill") return false;
+    if (o.recommend_zh && String(o.recommend_zh).includes("唔建議")) return false;
+    if (o.recommend_zh && String(o.recommend_zh).includes("可買")) return true;
+    return false;
+  }
+
+  function collectBuyable(data) {
+    if (data && Array.isArray(data.buyable_list) && data.buyable_list.length) {
+      return data.buyable_list;
+    }
+    // Fallback: derive from tips.options when export older
+    const rows = [];
+    for (const t of (data && data.tips) || []) {
+      const opts =
+        t.options && t.options.length
+          ? t.options
+          : [
+              {
+                buyable: t.buyable,
+                efficiency: t.efficiency,
+                recommend_zh: t.recommend_zh,
+                risk_tier: t.risk_tier,
+                risk_zh: t.risk_zh,
+                pick_line: t.pick_line,
+                hkjc_odds: t.hkjc_odds,
+                est_prob_pct: t.est_prob_pct,
+                star: t.star,
+                calibrated: t.calibrated,
+                confidence_zh: t.confidence_zh,
+                stake: t.stake,
+                market: t.market,
+                market_label: t.market_label,
+                pick: t.pick,
+              },
+            ];
+      for (const o of opts) {
+        if (!isBuyableOption(o)) continue;
+        const pct = o.est_prob_pct;
+        const starred =
+          o.star === true || (pct != null && Number(pct) >= 70);
+        rows.push({
+          front_end_id: t.front_end_id,
+          kickoff_hkt: t.kickoff_hkt,
+          tournament: t.tournament,
+          match_label:
+            ((t.home && t.home.ch) || "?") +
+            " vs " +
+            ((t.away && t.away.ch) || "?"),
+          risk_tier: o.risk_tier,
+          risk_zh: o.risk_zh,
+          pick_line: o.pick_line,
+          hkjc_odds: o.hkjc_odds,
+          est_prob_pct: pct,
+          calibrated: o.calibrated,
+          star: starred,
+          star_zh: starred ? "⭐" : null,
+          recommend_zh: o.recommend_zh || "可買（紙盤）",
+          confidence_zh: o.confidence_zh,
+          stake: o.stake,
+        });
+      }
+    }
+    rows.sort((a, b) => {
+      if (!!b.star - !!a.star) return !!b.star - !!a.star;
+      return (Number(b.est_prob_pct) || -1) - (Number(a.est_prob_pct) || -1);
+    });
+    return rows;
+  }
+
+  function renderBuyableList(data) {
+    let root = $("#buyable-list");
+    const panel = $("#panel-tips");
+    if (!root && panel) {
+      root = document.createElement("div");
+      root.id = "buyable-list";
+      root.setAttribute("aria-label", "可買清單");
+      panel.insertBefore(root, panel.firstChild);
+    }
+    if (!root) return;
+    const rows =
+      data && typeof data.buyable_count === "number" && Array.isArray(data.buyable_list)
+        ? data.buyable_list
+        : collectBuyable(data);
+    const n =
+      data && typeof data.buyable_count === "number"
+        ? data.buyable_count
+        : rows.length;
+    if (!n) {
+      root.innerHTML = `<section class="buyable-box empty-buy">
+  <div class="buyable-head">
+    <h2>可買清單</h2>
+    <span class="pill buyable">而家可買：0</span>
+  </div>
+  <div class="empty buyable-empty">而家可買：0<br/>未有過閘選項——正確空倉，唔好硬跟湊位。</div>
+</section>`;
+      return;
+    }
+    root.innerHTML = `<section class="buyable-box">
+  <div class="buyable-head">
+    <h2>可買清單</h2>
+    <span class="pill buyable">可買 ${esc(n)}</span>
+  </div>
+  <ul class="buyable-ul">
+    ${rows
+      .map((r) => {
+        const odds = r.hkjc_odds != null ? `@ ${esc(r.hkjc_odds)}` : "";
+        const calTag = r.calibrated ? "校準" : "估計";
+        const prob =
+          r.est_prob_pct != null
+            ? `${calTag} ${esc(r.est_prob_pct)}%`
+            : "—";
+        const star = r.star ? '<span class="star-mark">⭐</span>' : "";
+        const starPill = r.star
+          ? '<span class="pill star70">⭐ ≥70%</span>'
+          : "";
+        return `<li class="buyable-row${r.star ? " has-star" : ""}">
+  <div class="buyable-main">
+    <div class="buyable-match">${esc(r.match_label || "")}${star}</div>
+    <div class="buyable-meta">${esc(r.kickoff_hkt || "")} HKT${
+          r.tournament ? " · " + esc(r.tournament) : ""
+        }</div>
+    <div class="buyable-pick">${esc(r.pick_line || "")} ${odds}</div>
+  </div>
+  <div class="buyable-side">
+    <span class="risk-badge ${riskClass(r.risk_tier)}">${esc(
+      r.risk_zh || r.risk_tier || "—"
+    )}</span>
+    <span class="pill buyable">可買</span>
+    ${starPill}
+    <span class="pill">${esc(prob)}</span>
+  </div>
+</li>`;
+      })
+      .join("")}
+  </ul>
+</section>`;
+  }
 
   function renderTips(tips, data) {
     const root = $("#tips-list");
@@ -304,7 +455,21 @@
               data.history_meta.note_zh
             )}（ledger ${esc(data.history_meta.ledger_n)}｜實注 ${esc(
               data.history_meta.user_bets_n
-            )}）</div>`
+            )}｜賽後分析 ${esc(data.history_meta.postmatch_n || 0)}）</div>`
+          : ""
+      }
+      ${
+        data.postmatch_adapt
+          ? `<h3 style="margin-top:10px">賽後自動適應</h3>
+      <ul>${(data.postmatch_adapt.changelog_zh || [])
+        .slice(0, 6)
+        .map((e) => `<li>${esc(e)}</li>`)
+        .join("") || "<li>暫無權重變更</li>"}</ul>
+      <div style="color:var(--muted);font-size:.72rem">adapt as_of：${esc(
+        data.postmatch_adapt.as_of_hkt || ""
+      )}｜罰分桶 ${esc(data.postmatch_adapt.n_penalties)}｜加分 ${esc(
+        data.postmatch_adapt.n_bonuses
+      )}｜硬閘 ${esc(data.postmatch_adapt.n_gates)}</div>`
           : ""
       }
     </div>`;
@@ -349,7 +514,43 @@
           r.result_value ? `｜${esc(r.result_value)}` : ""
         }</div>
   ${
-    r.review_zh
+    r.postmatch
+      ? `<div class="summary postmatch">
+    <h3>${r.settlement === "HIT" ? "✅ 賽後分析（贏）" : r.settlement === "MISS" ? "❌ 賽後分析（輸）" : "賽後分析"}</h3>
+    <p>${esc((r.postmatch.analysis_zh || r.review_zh || "").slice(0, 500))}</p>
+    ${
+      (r.postmatch.causes || []).length
+        ? `<ul class="pm-causes">${r.postmatch.causes
+            .map(
+              (c) =>
+                `<li><strong>${esc(c.direction || "")}</strong> ${esc(c.zh || "")}</li>`
+            )
+            .join("")}</ul>`
+        : ""
+    }
+    ${
+      (r.postmatch.external || []).length
+        ? `<div class="pm-ext"><h4>外網對照</h4><ul>${r.postmatch.external
+            .map((e) => {
+              const label = esc(e.summary_zh || e.source || "");
+              return e.url
+                ? `<li><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(
+                    e.source || "外網"
+                  )}</a>：${label}</li>`
+                : `<li>${esc(e.source || "外網")}：${label}</li>`;
+            })
+            .join("")}</ul></div>`
+        : ""
+    }
+    ${
+      r.postmatch.next_change_zh || r.next_change_zh
+        ? `<p class="pm-next"><strong>下次應改：</strong>${esc(
+            r.postmatch.next_change_zh || r.next_change_zh
+          )}</p>`
+        : ""
+    }
+  </div>`
+      : r.review_zh
       ? `<div class="summary"><h3>覆盤</h3><p>${esc(r.review_zh)}</p></div>`
       : ""
   }
@@ -397,6 +598,12 @@
     if (data.star_ge70 != null) {
       parts.push(
         `<span class="chip ok">⭐≥70% ${esc(data.star_ge70)}</span>`
+      );
+    }
+    if (data.buyable_count != null) {
+      const bc = Number(data.buyable_count) || 0;
+      parts.push(
+        `<span class="chip ${bc > 0 ? "ok" : "warn"}">可買 ${esc(bc)}</span>`
       );
     }
     if (data.odds_compare_coverage) {
@@ -458,6 +665,7 @@
       const data = await res.json();
       window.__PUMPKIN_DATA__ = data;
       fillTop(data);
+      renderBuyableList(data);
       renderTips(data.tips || [], data);
       renderReview(data);
       $("#footer-note").textContent =
